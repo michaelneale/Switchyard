@@ -281,8 +281,7 @@ impl TranslatingLlmClient {
     ) -> std::result::Result<EncodedResponse, AttemptFailure> {
         let builder = self.client.post(url).json(body);
         let builder = forward_metadata_headers(builder, metadata);
-        let builder = apply_extra_headers(builder, backend);
-        let builder = backend.apply_auth(builder);
+        let builder = apply_backend_headers(builder, backend);
 
         let response = match builder.send().await {
             Ok(response) => response,
@@ -643,12 +642,20 @@ fn forward_metadata_headers(
     builder
 }
 
-// Adds the backend's static per-call headers.
+// Adds custom headers but skips OpenAI auth and Anthropic auth/version headers.
 fn apply_extra_headers(mut builder: RequestBuilder, backend: &Backend) -> RequestBuilder {
     for (name, value) in backend.extra_headers() {
+        if backend.ignores_extra_header(name) {
+            continue;
+        }
         builder = builder.header(name, value);
     }
     builder
+}
+
+// Builds one header set without duplicating OpenAI or Anthropic authentication headers.
+fn apply_backend_headers(builder: RequestBuilder, backend: &Backend) -> RequestBuilder {
+    backend.apply_auth(apply_extra_headers(builder, backend))
 }
 
 // Overwrites the outbound body's `model` field with the resolved model id.
@@ -817,6 +824,14 @@ mod tests {
             extra_body: BTreeMap::new(),
             max_retries: 0,
         }
+    }
+
+    fn header_values<'a>(headers: &'a HeaderMap, name: &str) -> Vec<&'a str> {
+        headers
+            .get_all(name)
+            .iter()
+            .map(|value| value.to_str().expect("header value should be text"))
+            .collect()
     }
 
     fn config_with_retries(base_url: &str, max_retries: u32) -> HttpBackendConfig {
@@ -1721,6 +1736,56 @@ mod tests {
             error,
             LlmClientError::ContextWindowExceeded { model, .. } if model == "gpt"
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn extra_headers_do_not_duplicate_auth_headers()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let extra_headers = BTreeMap::from([
+            ("AUTHORIZATION".to_string(), "Bearer injected".to_string()),
+            ("X-Api-Key".to_string(), "injected".to_string()),
+            ("ANTHROPIC-VERSION".to_string(), "injected".to_string()),
+            ("X-Inference-Priority".to_string(), "batch".to_string()),
+        ]);
+        let mut openai_config = config("https://example.test/v1");
+        openai_config.extra_headers = extra_headers.clone();
+        let openai = Backend::OpenAiChat(openai_config);
+        let request =
+            apply_backend_headers(reqwest::Client::new().post(openai.url()), &openai).build()?;
+        assert_eq!(
+            header_values(request.headers(), "authorization"),
+            ["Bearer secret"]
+        );
+        assert_eq!(header_values(request.headers(), "x-api-key"), ["injected"]);
+        assert_eq!(
+            header_values(request.headers(), "anthropic-version"),
+            ["injected"]
+        );
+        assert_eq!(
+            header_values(request.headers(), "x-inference-priority"),
+            ["batch"]
+        );
+
+        let mut anthropic_config = config("https://example.test");
+        anthropic_config.extra_headers = extra_headers;
+        let anthropic = Backend::Anthropic(anthropic_config);
+        let request =
+            apply_backend_headers(reqwest::Client::new().post(anthropic.url()), &anthropic)
+                .build()?;
+        assert_eq!(
+            header_values(request.headers(), "authorization"),
+            ["Bearer injected"]
+        );
+        assert_eq!(header_values(request.headers(), "x-api-key"), ["secret"]);
+        assert_eq!(
+            header_values(request.headers(), "anthropic-version"),
+            ["2023-06-01"]
+        );
+        assert_eq!(
+            header_values(request.headers(), "x-inference-priority"),
+            ["batch"]
+        );
         Ok(())
     }
 

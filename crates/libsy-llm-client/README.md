@@ -212,7 +212,11 @@ fn build_multi_format_client(
   `host`, `content-length`, `connection`, and the backend-owned
   `authorization` / `x-api-key` / `anthropic-version` / `content-type`. So a
   caller's placeholder credential never overrides the backend's real key.
-- Per-backend static headers go in `HttpBackendConfig::extra_headers`.
+- Per-backend custom headers go in `HttpBackendConfig::extra_headers`. Set credentials with
+  `api_key`. For OpenAI requests, the client ignores `Authorization` in `extra_headers`
+  and sends the key from `api_key` once. For Anthropic requests, it ignores `x-api-key`
+  and `anthropic-version` in `extra_headers`, then sends the key from `api_key` and the
+  required Anthropic version. Header names are matched without regard to letter case.
 - Per-target top-level request defaults go in `HttpBackendConfig::extra_body`.
   The merge is shallow and fields already present in the request take precedence.
 - `HttpBackendConfig::max_retries` controls additional attempts after retryable

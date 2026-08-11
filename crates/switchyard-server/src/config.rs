@@ -1460,6 +1460,19 @@ target = "azure"
     }
 
     #[test]
+    fn auth_extra_headers_do_not_block_config_loading() -> ServerResult<()> {
+        let configured = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\n\
+             extra_headers = { Authorization = \"injected\", X-Inference-Priority = \"batch\" }",
+            1,
+        );
+
+        server_state_from_toml(&configured)?;
+        Ok(())
+    }
+
+    #[test]
     fn retry_budget_defaults_and_accepts_an_override() -> ServerResult<()> {
         let default: ServerConfig = toml::from_str(VALID_CONFIG).map_err(|error| {
             ServerError::new(format!("failed to parse default config: {error}"))
